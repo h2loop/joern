@@ -19,15 +19,26 @@ the fix is a `ThisBuild / dependencyOverrides` block in `build.sbt`.
 
 All bumps stay within the same major/API line → drop-in patch/minor upgrades.
 
-## NOT fixed here (needs upstream / a newer astgen build)
+## Fixed (native Go astgen — rebuilt with a newer Go)
 
 The largest remaining bucket (~70 HIGH + 1 CRITICAL, reported as Go `stdlib`
-`v1.21.12`, e.g. CVE-2025-68121) comes from the **prebuilt native `astgen`
-binaries** that Joern downloads at build time (e.g. `goastgen` for `gosrc2cpg`),
-which were compiled with an old Go toolchain. These are **not** controllable from
-this sbt build — they require the upstream astgen repos (joernio/*astgen) to be
-rebuilt with Go >= 1.24.13, or bumping the astgen binary versions once such a
-release exists. Tracked separately.
+`v1.21.12`, e.g. CVE-2025-68121) came from the prebuilt `goastgen` binary
+(`gosrc2cpg`), which upstream compiled with go1.21.12. Both upstream releases
+(v0.1.0 and v0.1.1) use that same old toolchain, so a version bump alone does
+nothing.
+
+Fix: `goastgen` was rebuilt from source with **go1.25.6** (same source, hardened
+toolchain) for all platforms and published as
+`h2loop/astgen-monorepo` release **`go-astgen/v0.1.1-h2loop1`**. This fork now
+pulls that build:
+- `gosrc2cpg/src/main/resources/application.conf`: `goastgen_version` -> `0.1.1-h2loop1`
+- `gosrc2cpg/build.sbt`: `goAstGenDlUrl` -> `h2loop/astgen-monorepo`
+Source change (go directive floor -> 1.24.13) lives on
+`h2loop/astgen-monorepo@security/goastgen-go-bump`.
+
+Note: the other astgen binaries (jssrc2cpg=node, csharpsrc2cpg=.NET,
+swiftsrc2cpg=Swift) are not Go and were not flagged; they're already at their
+latest upstream versions.
 
 ## Verifying
 ```
