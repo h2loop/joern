@@ -64,21 +64,21 @@ ThisBuild / libraryDependencies ++= Seq(
 
 // Security: force fixed versions of vulnerable *transitive* dependencies that get
 // bundled into joern-cli/lib. Each bump stays within the same major/API line, so
-// these are drop-in patch/minor upgrades (verified fixed versions from Trivy):
-//   protobuf-java 3.20.1/3.21.8 -> 3.25.5  (stays on 3.x, avoids the 4.x break)
-//   undertow-core 2.3.18        -> 2.3.21.Final
-//   bcprov-jdk18on 1.78         -> 1.81
-//   msgpack-core 0.9.1          -> 0.9.11
-//   okhttp 4.7.2                -> 4.9.2
-//   commons-io 2.11.0           -> 2.14.0  (Versions.commonsIo is already 2.16.0; pin for any older transitive)
+// these are drop-in patch/minor upgrades (latest release in each line as of 2026-07-31):
+//   protobuf-java 3.20.1/3.21.8 -> 3.25.9      (stays on 3.x, avoids the 4.x break)
+//   undertow-core 2.3.18.Final  -> 2.3.26.Final
+//   bcprov-jdk18on 1.78         -> 1.85
+//   msgpack-core 0.9.1          -> 0.9.12
+//   okhttp 4.7.2                -> 4.12.0
+//   commons-io <2.16.0          -> 2.16.0      (matches Versions.commonsIo; raises older transitives only)
 //   plexus-utils 3.2.1          -> 3.6.1
 ThisBuild / dependencyOverrides ++= Seq(
-  "com.google.protobuf"      % "protobuf-java"    % "3.25.5",
-  "io.undertow"              % "undertow-core"    % "2.3.21.Final",
-  "org.bouncycastle"         % "bcprov-jdk18on"   % "1.81",
-  "org.msgpack"              % "msgpack-core"     % "0.9.11",
-  "com.squareup.okhttp3"     % "okhttp"           % "4.9.2",
-  "commons-io"               % "commons-io"       % "2.16.0",
+  "com.google.protobuf"      % "protobuf-java"    % "3.25.9",
+  "io.undertow"              % "undertow-core"    % "2.3.26.Final",
+  "org.bouncycastle"         % "bcprov-jdk18on"   % "1.85",
+  "org.msgpack"              % "msgpack-core"     % "0.9.12",
+  "com.squareup.okhttp3"     % "okhttp"           % "4.12.0",
+  "commons-io"               % "commons-io"       % Versions.commonsIo,
   "org.codehaus.plexus"      % "plexus-utils"     % "3.6.1"
 )
 

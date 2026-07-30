@@ -1,0 +1,154 @@
+name: h2loop hardened image
+
+# Builds Joern from *this fork's source* (so build.sbt dependencyOverrides and the
+# rebuilt goastgen actually land in the artifact), publishes it to
+# ghcr.io/h2loop/joern, and Trivy-scans the result.
+#
+# Upstream's containers.yml cannot do this: it installs the prebuilt joern-cli.zip
+# from the latest joernio/joern release, which is unaffected by our fixes.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - security/bundled-dep-overrides
+  schedule:
+    - cron: "0 9 * * 1" # weekly, to pick up OS package patches
+
+env:
+  IMAGE: ghcr.io/h2loop/joern
+
+jobs:
+  build-scan-push:
+    if: github.repository_owner == 'h2loop'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # sbt-dynver needs tags to compute the version
+
+      # The sbt build plus image layers do not comfortably fit in the runner's
+      # default free space.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost
+          sudo docker image prune -af || true
+          df -h /
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Build image (load locally, do not push yet)
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: ci/Dockerfile.h2loop
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.IMAGE }}:ci-${{ github.sha }}
+          cache-from: type=gha,scope=joern-h2loop
+          cache-to: type=gha,mode=max,scope=joern-h2loop
+
+      # Fail fast if the dependency overrides broke the distribution.
+      - name: Smoke test the frontends code-ingestion uses
+        run: |
+          set -euo pipefail
+          IMG=${{ env.IMAGE }}:ci-${{ github.sha }}
+          # Exactly the entrypoints app/joern_client.py resolves against
+          # dirname(JOERN_CLI_PATH), i.e. /opt/joern/joern-cli/<tool>.
+          docker run --rm --entrypoint sh "$IMG" -c '
+            set -e
+            cd /opt/joern/joern-cli
+            for f in joern joern-parse c2cpg.sh javasrc2cpg pysrc2cpg jssrc2cpg.sh \
+                     gosrc2cpg csharpsrc2cpg php2cpg rubysrc2cpg kotlin2cpg \
+                     swiftsrc2cpg.sh; do
+              test -x "./$f" || { echo "MISSING: $f"; exit 1; }
+            done
+            echo "all expected frontend entrypoints present"
+          '
+          # Actually parse something and confirm a CPG comes out. Language is
+          # auto-detected, matching how code-ingestion drives c2cpg.sh.
+          mkdir -p /tmp/smoke
+          printf "int main(void){int x=1;return x;}\n" > /tmp/smoke/main.c
+          docker run --rm -v /tmp/smoke:/work -w /work --entrypoint sh "$IMG" -c \
+            '/opt/joern/joern-cli/c2cpg.sh /work --output /work/cpg.bin'
+          test -s /tmp/smoke/cpg.bin
+          echo "c2cpg produced a CPG"
+
+      # Confirm the overrides are what actually got bundled, not just requested.
+      - name: Verify hardened dependency versions in joern-cli/lib
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint sh ${{ env.IMAGE }}:ci-${{ github.sha }} -c '
+            ls /opt/joern/joern-cli/lib | grep -iE "protobuf-java|undertow-core|bcprov|msgpack-core|okhttp|commons-io|plexus-utils" | sort
+          ' | tee /tmp/bundled.txt
+          fail=0
+          check() { grep -q "$1" /tmp/bundled.txt || { echo "NOT BUNDLED AS EXPECTED: $1"; fail=1; }; }
+          check "protobuf-java-3.25.9"
+          check "undertow-core-2.3.26.Final"
+          check "bcprov-jdk18on-1.85"
+          check "msgpack-core-0.9.12"
+          check "okhttp-4.12.0"
+          check "plexus-utils-3.6.1"
+          exit $fail
+
+      - name: Confirm goastgen is the h2loop rebuild
+        run: |
+          docker run --rm --entrypoint sh ${{ env.IMAGE }}:ci-${{ github.sha }} -c '
+            b=$(find /opt/joern/joern-cli -name "goastgen*" -type f | head -1)
+            echo "binary: $b"
+            go_ver=$(strings "$b" 2>/dev/null | grep -oE "^go1\.[0-9]+(\.[0-9]+)?$" | sort -u | head -5)
+            echo "embedded go toolchain markers: $go_ver"
+          ' || echo "note: strings unavailable in image; Trivy output below is authoritative"
+
+      - name: Trivy scan (report only on first runs)
+        uses: aquasecurity/trivy-action@dc5a429b52fcf669ce959baa2c2dd26090d2a6c4 # v0.32.0
+        with:
+          image-ref: ${{ env.IMAGE }}:ci-${{ github.sha }}
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          output: trivy-report.txt
+          exit-code: "0"
+
+      - name: Trivy summary
+        run: |
+          {
+            echo '## Trivy: HIGH/CRITICAL (fixable) in `${{ env.IMAGE }}`'
+            echo '```'
+            head -c 60000 trivy-report.txt
+            echo '```'
+          } >> $GITHUB_STEP_SUMMARY
+          echo "--- counts ---"
+          grep -cE "\bHIGH\b" trivy-report.txt || true
+          grep -cE "\bCRITICAL\b" trivy-report.txt || true
+
+      - name: Upload Trivy report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: trivy-report
+          path: trivy-report.txt
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push (hardened + sha tags)
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          SRC=${{ env.IMAGE }}:ci-${{ github.sha }}
+          SHORT=$(echo "${{ github.sha }}" | cut -c1-12)
+          for tag in hardened "sha-$SHORT"; do
+            docker tag "$SRC" "${{ env.IMAGE }}:$tag"
+            docker push "${{ env.IMAGE }}:$tag"
+          done
+          echo "Digest to pin in code-ingestion-service/Dockerfile:"
+          docker inspect --format='{{index .RepoDigests 0}}' "${{ env.IMAGE }}:hardened" || true

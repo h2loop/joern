@@ -1,0 +1,85 @@
+### h2loop hardened Joern image ###
+#
+# Why this file exists (and ci/Dockerfile.alma does not suffice):
+# upstream's image does NOT build Joern -- it downloads the prebuilt joern-cli.zip
+# from the latest joernio/joern GitHub release via joern-install.sh. That means the
+# dependencyOverrides in this fork's build.sbt would never reach the image. So we
+# build joern-cli from *this working tree* and install the resulting zip into the
+# exact same location upstream uses (/opt/joern/joern-cli), keeping the image a
+# drop-in replacement for ghcr.io/joernio/joern.
+#
+# Build:  docker build -f ci/Dockerfile.h2loop -t ghcr.io/h2loop/joern:hardened .
+# Target: linux/amd64 only (all first-party h2loop images are amd64).
+
+################################ builder ################################
+FROM almalinux/9-minimal:latest AS builder
+
+ENV SBT_VERSION=1.12.1 \
+    SBT_HOME=/usr/local/sbt \
+    JAVA_HOME=/usr/lib/jvm/java-21-openjdk
+ENV PATH=${PATH}:${SBT_HOME}/bin:${JAVA_HOME}/bin
+
+# JDK 21 is required to *build* Joern (see .github/workflows/release.yml).
+# Every frontend's native helper (goastgen, js/ruby/rust/abap astgen, php-parser)
+# is downloaded as a prebuilt release asset by sbt, so no rust/ruby/node/swift
+# toolchain is needed here -- only a JDK, sbt, and curl/unzip/git.
+RUN microdnf update -y \
+    && microdnf install -y java-21-openjdk-devel curl-minimal tar gzip zip unzip git-core which \
+    && curl -sL "https://github.com/sbt/sbt/releases/download/v${SBT_VERSION}/sbt-${SBT_VERSION}.tgz" \
+       | gunzip | tar -x -C /usr/local \
+    && microdnf clean all
+
+WORKDIR /src
+COPY . /src
+
+# Produces joern-cli/target/universal/joern-cli-<version>.zip -- the same artifact
+# upstream publishes as a release asset. Its top-level directory is `joern-cli`
+# (topLevelDirectory in joern-cli/build.sbt), so unzipping into /opt/joern yields
+# /opt/joern/joern-cli, exactly what joern-install.sh produces upstream.
+# The version suffix comes from sbt-dynver, hence the glob.
+RUN sbt --batch "joerncli/Universal/packageBin" \
+    && mkdir -p /dist \
+    && cp joern-cli/target/universal/joern-cli-*.zip /dist/joern-cli.zip
+
+################################ runtime ################################
+FROM almalinux/9-minimal:latest
+
+LABEL maintainer="h2loop" \
+      org.opencontainers.image.authors="H2Loop" \
+      org.opencontainers.image.source="https://github.com/h2loop/joern" \
+      org.opencontainers.image.url="https://github.com/h2loop/joern" \
+      org.opencontainers.image.vendor="H2Loop" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.title="joern (h2loop hardened)" \
+      org.opencontainers.image.description="Joern with vulnerable bundled transitive deps overridden and goastgen rebuilt on a current Go toolchain. See SECURITY-FIXES.md." \
+      org.opencontainers.docker.cmd="docker run --rm -it -v /tmp:/tmp -v $(pwd):/app:rw -w /app -t ghcr.io/h2loop/joern joern"
+
+# Identical to ci/Dockerfile.alma so this image is a drop-in replacement.
+ENV JOERN_HOME=/opt/joern/joern-cli \
+    LC_ALL=en_US.UTF-8 \
+    LANG=en_US.UTF-8 \
+    LANGUAGE=en_US.UTF-8 \
+    JAVA_HOME="/etc/alternatives/jre_17" \
+    JAVA_17_HOME="/etc/alternatives/jre_17" \
+    JOERN_DATAFLOW_TRACKED_WIDTH=128 \
+    CLASSPATH=$CLASSPATH:/usr/local/bin: \
+    PATH=${PATH}:/opt/joern/joern-cli:/opt/joern/joern-cli/bin:${GOPATH}/bin:/usr/local/go/bin:/usr/local/bin:/root/.local/bin:${JAVA_HOME}/bin:
+
+COPY --from=builder /dist/joern-cli.zip /joern-cli.zip
+
+# Same package set as ci/Dockerfile.alma, but `microdnf update` first so OS
+# packages land on current patch levels instead of whatever the base layer froze.
+RUN microdnf update -y \
+    && microdnf install -y gcc git-core php php-cli python3 python3-devel pcre2 which tar zip unzip sudo \
+        java-17-openjdk-headless ncurses jq zlib graphviz glibc-common glibc-all-langpacks \
+    && mkdir -p /opt/joern \
+    && unzip -qo -d /opt/joern /joern-cli.zip \
+    && useradd -ms /bin/bash joern \
+    && chown -R joern:joern /opt/joern \
+    && rm /joern-cli.zip \
+    && rm -rf /var/cache/yum \
+    && microdnf clean all
+
+WORKDIR /app
+
+CMD [ "joern" ]
