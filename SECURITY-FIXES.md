@@ -99,8 +99,12 @@ compile Joern. It downloads the prebuilt `joern-cli.zip` from the latest
 
 ### Image size
 
-Upstream `ghcr.io/joernio/joern` (amd64) is **2.63 GB compressed / ~5.1 GB
-uncompressed** in 3 layers, almost all of it one 2596 MB layer.
+Upstream `ghcr.io/joernio/joern` (amd64) is **2.63 GB** in 3 layers, almost all of
+it one 2596 MB layer, summing compressed (`tar+gzip`) layer sizes from the manifest.
+The hardened image is **2.45 GB** measured the same way.
+
+Compare like with like: `docker image inspect .Size` reports the *uncompressed*
+total (3.42 GB here) and is not comparable to a manifest layer sum.
 
 The first revision of this Dockerfile came out ~1.3 GB heavier, because it did
 `COPY --from=builder /dist/joern-cli.zip` and then `rm`-ed the zip in the *next*
@@ -141,7 +145,11 @@ with IAM write access. `DeveloperAccess` cannot do it.
 
 Until then the workflow still builds, gates and scans; instead of pushing it
 exports the image as a `joern-image` artifact so it can be loaded and pushed to ECR
-with a developer's own SSO credentials. The ECR repository
+with a developer's own SSO credentials. Push that tarball with `crane push`, **not**
+`docker load` + `docker push`: layers from a `docker save` archive are uncompressed,
+and `docker push` ships them as-is (`application/vnd.oci.image.layer.v1.tar`),
+which made the first push 3.42 GB instead of 2.45 GB. `crane` gzips them, matching
+what a direct CI push would produce. The ECR repository
 `hydron-platform/joern` already exists (created 2026-07-31, `scanOnPush=true`).
 
 The workflow builds, then **gates on**:
@@ -189,7 +197,10 @@ trivy image --severity HIGH,CRITICAL --ignore-unfixed joern-h2loop:local
 - [x] ECR repo `hydron-platform/joern` created (us-east-1, scanOnPush)
 - [x] `AWS_REGION` var set on this repo
 - [ ] `AWS_ROLE_ARN` secret + IAM trust policy for `repo:h2loop/joern:*` -- **needs IAM write access**
-- [ ] Image in ECR (bootstrap via the exported tarball until the role exists)
+- [x] Image in ECR: `hydron-platform/joern:hardened`
+      = `sha256:d2b083537ca15df153b150b2c405ae0b7d692b87bbab67d483928e0fbf99a469`
+      (also tagged `sha-d2f06805be98`), 2.45 GB, pushed 2026-07-31
+- [x] Trivy clean: 1118 targets, **0 fixable HIGH/CRITICAL** (run 30586833684)
 - [ ] Verified on the dev cluster (see caveat below)
 - [ ] `code-ingestion-service/Dockerfile` `FROM` flipped to the new image by digest
 

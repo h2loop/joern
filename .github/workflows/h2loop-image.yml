@@ -271,10 +271,14 @@ jobs:
             echo "Load and publish it with:"
             echo ""
             echo '    gh run download ${{ github.run_id }} -R h2loop/joern -n joern-image'
-            echo '    gunzip -c joern-hardened.tar.gz | docker load'
-            echo '    aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 501235162365.dkr.ecr.us-east-1.amazonaws.com'
-            echo '    docker tag ${{ env.LOCAL_TAG }} 501235162365.dkr.ecr.us-east-1.amazonaws.com/${{ env.ECR_REPOSITORY }}:hardened'
-            echo '    docker push 501235162365.dkr.ecr.us-east-1.amazonaws.com/${{ env.ECR_REPOSITORY }}:hardened'
+            echo '    gunzip -c joern-hardened.tar.gz > joern-hardened.tar'
+            echo '    aws ecr get-login-password --region us-east-1 | crane auth login --username AWS --password-stdin 501235162365.dkr.ecr.us-east-1.amazonaws.com'
+            echo '    crane push joern-hardened.tar 501235162365.dkr.ecr.us-east-1.amazonaws.com/${{ env.ECR_REPOSITORY }}:hardened'
+            echo ''
+            echo 'Use crane, NOT docker load + docker push: layers coming out of a docker'
+            echo 'save archive are uncompressed, and docker push ships them as-is'
+            echo '(application/vnd.oci.image.layer.v1.tar), making the image ~1 GB bigger'
+            echo 'on the wire. crane gzips them, matching what a direct CI push produces.'
           } >> $GITHUB_STEP_SUMMARY
 
       - name: Upload image tarball
