@@ -17,6 +17,7 @@ its line as of 2026-07-31.
 | Package | Was | Now | Notes |
 |---|---|---|---|
 | com.google.protobuf:protobuf-java | 3.20.1 & 3.21.8 | 3.25.9 | stays on 3.x, avoids the 4.x break; ~43 HIGH |
+| com.google.protobuf:protobuf-java-util | 3.25.5 | 3.25.9 | separate artifact, found bundled at 3.25.5; kept in lockstep |
 | io.undertow:undertow-core | 2.3.18.Final | 2.3.26.Final | CVE-2025-12543 (CRITICAL) + 3 HIGH |
 | org.bouncycastle:bcprov-jdk18on | 1.78 | 1.85 | CVE-2025-14813 (CRITICAL) |
 | org.msgpack:msgpack-core | 0.9.1 | 0.9.12 | 15 HIGH |
@@ -99,18 +100,17 @@ then Trivy-scans and pushes.
 
 ### On `bcprov` and `okhttp`
 
-Run 30579709736 found **no `bcprov` or `okhttp` jar of any version** in
-`joern-cli/lib`. `dependencyOverrides` only pins what is actually in the dependency
-graph, so an override for something upstream does not pull in is a no-op -- it does
-not invent a jar. Two possibilities, and the rebuilt gate distinguishes them:
-either those jars live in one of the *other* ~15 lib directories (each frontend's
-staged output is mapped in under its own subdirectory by `joern-cli/build.sbt`, so
-the first version of this check was looking in one of fifteen places), or the
-original Trivy findings came from somewhere other than the Joern distribution and
-the overrides for them were never load-bearing.
+The first gate looked only at `joern-cli/lib` and reported both missing.
+`okhttp` was simply in a *different* lib directory -- the distribution has ~15,
+one per frontend -- and the whole-tree scan on run 30581433009 found it correctly
+overridden at 4.12.0.
 
-Either way the correct assertion is the absence of the flagged versions anywhere in
-the tree, not the presence of specific new ones.
+`bcprov` is genuinely **absent from the distribution**: no jar of any version
+anywhere under `/opt/joern`. `dependencyOverrides` only pins deps already in the
+graph, so that override is an inert no-op, and the original CVE-2025-14813 finding
+must have come from somewhere other than the Joern distribution (a `find -name
+"*.jar"` also would not see jars nested inside a zip, e.g. the ghidra bundle).
+The Trivy report is authoritative on this; the override is harmless either way.
 
 ## Building / verifying locally
 

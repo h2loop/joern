@@ -138,15 +138,21 @@ jobs:
             echo "embedded go toolchain markers: $go_ver"
           ' || echo "note: strings unavailable in image; Trivy output below is authoritative"
 
-      - name: Trivy scan (report only on first runs)
-        uses: aquasecurity/trivy-action@dc5a429b52fcf669ce959baa2c2dd26090d2a6c4 # v0.32.0
-        with:
-          image-ref: ${{ env.LOCAL_TAG }}
-          format: table
-          severity: CRITICAL,HIGH
-          ignore-unfixed: true
-          output: trivy-report.txt
-          exit-code: "0"
+      # Run Trivy from its own image rather than via trivy-action: that action's
+      # setup step installs the binary through the GitHub API and failed on run
+      # 30581433009 ("installing Trivy binary" -> exit 1). Docker is already here.
+      - name: Trivy scan
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.cache/trivy"
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$HOME/.cache/trivy:/root/.cache" \
+            aquasec/trivy:0.70.0@sha256:be1190afcb28352bfddc4ddeb71470835d16462af68d310f9f4bca710961a41e \
+            image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
+                  --format table --timeout 20m \
+                  --exit-code 0 \
+                  ${{ env.LOCAL_TAG }} | tee trivy-report.txt
 
       - name: Trivy summary
         run: |
@@ -156,9 +162,8 @@ jobs:
             head -c 60000 trivy-report.txt
             echo '```'
           } >> $GITHUB_STEP_SUMMARY
-          echo "--- counts ---"
-          grep -cE "\bHIGH\b" trivy-report.txt || true
-          grep -cE "\bCRITICAL\b" trivy-report.txt || true
+          echo "HIGH count:     $(grep -cE '\bHIGH\b' trivy-report.txt || true)"
+          echo "CRITICAL count: $(grep -cE '\bCRITICAL\b' trivy-report.txt || true)"
 
       - name: Upload Trivy report
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

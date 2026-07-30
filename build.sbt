@@ -66,6 +66,7 @@ ThisBuild / libraryDependencies ++= Seq(
 // bundled into joern-cli/lib. Each bump stays within the same major/API line, so
 // these are drop-in patch/minor upgrades (latest release in each line as of 2026-07-31):
 //   protobuf-java 3.20.1/3.21.8 -> 3.25.9      (stays on 3.x, avoids the 4.x break)
+//   protobuf-java-util 3.25.5   -> 3.25.9      (separate artifact; keep in lockstep)
 //   undertow-core 2.3.18.Final  -> 2.3.26.Final
 //   bcprov-jdk18on 1.78         -> 1.85
 //   msgpack-core 0.9.1          -> 0.9.12
@@ -73,7 +74,8 @@ ThisBuild / libraryDependencies ++= Seq(
 //   commons-io <2.16.0          -> 2.16.0      (matches Versions.commonsIo; raises older transitives only)
 //   plexus-utils 3.2.1          -> 3.6.1
 ThisBuild / dependencyOverrides ++= Seq(
-  "com.google.protobuf"      % "protobuf-java"    % "3.25.9",
+  "com.google.protobuf"      % "protobuf-java"      % "3.25.9",
+  "com.google.protobuf"      % "protobuf-java-util" % "3.25.9",
   "io.undertow"              % "undertow-core"    % "2.3.26.Final",
   "org.bouncycastle"         % "bcprov-jdk18on"   % "1.85",
   "org.msgpack"              % "msgpack-core"     % "0.9.12",
