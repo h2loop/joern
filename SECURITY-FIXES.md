@@ -67,9 +67,21 @@ That layout matters: `code-ingestion-service` resolves frontends as
 `dirname($JOERN_CLI_PATH)/<tool>` with `JOERN_CLI_PATH=/opt/joern/joern-cli/joern`,
 so the image is a drop-in replacement for `ghcr.io/joernio/joern`.
 
-Published as `ghcr.io/h2loop/joern:hardened` by
+Published to ECR as
+`501235162365.dkr.ecr.us-east-1.amazonaws.com/hydron-platform/joern:hardened` by
 `.github/workflows/h2loop-image.yml` (linux/amd64 only -- all first-party h2loop
-images are amd64). The workflow builds, then **gates on**:
+images are amd64). It authenticates with the same GitHub OIDC pattern as
+`h2loop/hydron-cli`, so the repo needs:
+
+| kind | name | value |
+|---|---|---|
+| secret | `AWS_ROLE_ARN` | role trusting `repo:h2loop/joern:*`, with ECR push rights on `hydron-platform/joern` |
+| var | `AWS_REGION` | `us-east-1` |
+
+Until `AWS_ROLE_ARN` is set the workflow still builds, gates and scans -- it just
+skips the push with a warning annotation instead of failing.
+
+The workflow builds, then **gates on**:
 1. all 12 frontend entrypoints `code-ingestion` invokes being present and executable,
 2. `c2cpg.sh` actually producing a CPG,
 3. the overridden versions being the ones physically in `joern-cli/lib` (requested
@@ -83,8 +95,8 @@ Needs ~8 GB of RAM for the builder (`.sbtopts` asks for a 4 GB heap alone), so a
 Docker VM with 4 GB will OOM -- use CI or a bigger machine.
 
 ```
-docker build -f ci/Dockerfile.h2loop -t ghcr.io/h2loop/joern:hardened .
-trivy image --severity HIGH,CRITICAL --ignore-unfixed ghcr.io/h2loop/joern:hardened
+docker build -f ci/Dockerfile.h2loop -t joern-h2loop:local .
+trivy image --severity HIGH,CRITICAL --ignore-unfixed joern-h2loop:local
 ```
 
 ## Status
@@ -93,4 +105,19 @@ trivy image --severity HIGH,CRITICAL --ignore-unfixed ghcr.io/h2loop/joern:harde
 - [x] Rebased onto upstream `master` (2026-07-31), no conflicts
 - [x] Image build path that actually carries the fixes
 - [ ] CI run green (build + smoke + bundled-version gate + scan) -- **not yet run**
+- [ ] `AWS_ROLE_ARN` / `AWS_REGION` configured on this repo, image pushed to ECR
+- [ ] Verified on the dev cluster (see caveat below)
 - [ ] `code-ingestion-service/Dockerfile` `FROM` flipped to the new image by digest
+
+### Caveat for the dev-cluster test
+
+`eks-dev` pulls `code-ingestion` from **GCP Artifact Registry**
+(`asia-south1-docker.pkg.dev/h2loop-dev/saas-dev-images/code-ingestion`), and that
+image's build pipeline authenticates to GCP via Workload Identity Federation only
+-- it holds no AWS credentials. So a `FROM` pointing at a private ECR repo will
+fail in that build. Before the dev test, one of these has to happen:
+
+1. mirror the hardened image to GAR as well (dev builds pull from GAR, ECR stays
+   the canonical copy for `eks-dev` core images and onprem), or
+2. add AWS OIDC credentials to `code-ingestion-service`'s build workflow, or
+3. rebuild `code-ingestion` by hand for the dev test.

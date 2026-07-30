@@ -2,10 +2,15 @@ name: h2loop hardened image
 
 # Builds Joern from *this fork's source* (so build.sbt dependencyOverrides and the
 # rebuilt goastgen actually land in the artifact), publishes it to
-# ghcr.io/h2loop/joern, and Trivy-scans the result.
+# ECR (hydron-platform/joern), and Trivy-scans the result.
 #
 # Upstream's containers.yml cannot do this: it installs the prebuilt joern-cli.zip
 # from the latest joernio/joern release, which is unaffected by our fixes.
+#
+# Requires (same OIDC pattern as h2loop/hydron-cli):
+#   secret AWS_ROLE_ARN  - role trusting repo:h2loop/joern:*, with ecr push rights
+#   var    AWS_REGION    - us-east-1 (where hydron-platform/* lives)
+# Without the secret the build and scan still run; the push is skipped loudly.
 
 on:
   workflow_dispatch:
@@ -16,7 +21,8 @@ on:
     - cron: "0 9 * * 1" # weekly, to pick up OS package patches
 
 env:
-  IMAGE: ghcr.io/h2loop/joern
+  ECR_REPOSITORY: hydron-platform/joern
+  LOCAL_TAG: joern-h2loop:ci
 
 jobs:
   build-scan-push:
@@ -24,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+      id-token: write # for aws-actions/configure-aws-credentials
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -48,7 +54,7 @@ jobs:
           file: ci/Dockerfile.h2loop
           platforms: linux/amd64
           load: true
-          tags: ${{ env.IMAGE }}:ci-${{ github.sha }}
+          tags: ${{ env.LOCAL_TAG }}
           cache-from: type=gha,scope=joern-h2loop
           cache-to: type=gha,mode=max,scope=joern-h2loop
 
@@ -56,7 +62,7 @@ jobs:
       - name: Smoke test the frontends code-ingestion uses
         run: |
           set -euo pipefail
-          IMG=${{ env.IMAGE }}:ci-${{ github.sha }}
+          IMG=${{ env.LOCAL_TAG }}
           # Exactly the entrypoints app/joern_client.py resolves against
           # dirname(JOERN_CLI_PATH), i.e. /opt/joern/joern-cli/<tool>.
           docker run --rm --entrypoint sh "$IMG" -c '
@@ -82,7 +88,7 @@ jobs:
       - name: Verify hardened dependency versions in joern-cli/lib
         run: |
           set -euo pipefail
-          docker run --rm --entrypoint sh ${{ env.IMAGE }}:ci-${{ github.sha }} -c '
+          docker run --rm --entrypoint sh ${{ env.LOCAL_TAG }} -c '
             ls /opt/joern/joern-cli/lib | grep -iE "protobuf-java|undertow-core|bcprov|msgpack-core|okhttp|commons-io|plexus-utils" | sort
           ' | tee /tmp/bundled.txt
           fail=0
@@ -97,7 +103,7 @@ jobs:
 
       - name: Confirm goastgen is the h2loop rebuild
         run: |
-          docker run --rm --entrypoint sh ${{ env.IMAGE }}:ci-${{ github.sha }} -c '
+          docker run --rm --entrypoint sh ${{ env.LOCAL_TAG }} -c '
             b=$(find /opt/joern/joern-cli -name "goastgen*" -type f | head -1)
             echo "binary: $b"
             go_ver=$(strings "$b" 2>/dev/null | grep -oE "^go1\.[0-9]+(\.[0-9]+)?$" | sort -u | head -5)
@@ -107,7 +113,7 @@ jobs:
       - name: Trivy scan (report only on first runs)
         uses: aquasecurity/trivy-action@dc5a429b52fcf669ce959baa2c2dd26090d2a6c4 # v0.32.0
         with:
-          image-ref: ${{ env.IMAGE }}:ci-${{ github.sha }}
+          image-ref: ${{ env.LOCAL_TAG }}
           format: table
           severity: CRITICAL,HIGH
           ignore-unfixed: true
@@ -117,7 +123,7 @@ jobs:
       - name: Trivy summary
         run: |
           {
-            echo '## Trivy: HIGH/CRITICAL (fixable) in `${{ env.IMAGE }}`'
+            echo '## Trivy: HIGH/CRITICAL (fixable), `${{ env.ECR_REPOSITORY }}` candidate'
             echo '```'
             head -c 60000 trivy-report.txt
             echo '```'
@@ -132,23 +138,56 @@ jobs:
           name: trivy-report
           path: trivy-report.txt
 
-      - name: Log in to GHCR
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      # --- publish to ECR (hydron-platform/joern, us-east-1) ---
+      # Skipped, loudly, when the OIDC secret has not been configured yet.
+      - name: Check for AWS credentials
+        id: awscheck
+        run: |
+          if [ -n "${{ secrets.AWS_ROLE_ARN }}" ]; then
+            echo "configured=true" >> $GITHUB_OUTPUT
+          else
+            echo "configured=false" >> $GITHUB_OUTPUT
+            echo "::warning title=ECR push skipped::secrets.AWS_ROLE_ARN is not set on this repo, so the image was built and scanned but NOT published. See SECURITY-FIXES.md."
+            echo '> **Image NOT pushed** - `secrets.AWS_ROLE_ARN` is unset on h2loop/joern.' >> $GITHUB_STEP_SUMMARY
+          fi
 
-      - name: Push (hardened + sha tags)
-        if: github.event_name != 'pull_request'
+      - name: Configure AWS credentials (OIDC)
+        if: steps.awscheck.outputs.configured == 'true'
+        uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c # v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        if: steps.awscheck.outputs.configured == 'true'
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@4625ce35226a7557230889aae2f52eb50ec3dcda # v2.0.1
+
+      - name: Push to ECR (hardened + sha tags)
+        if: steps.awscheck.outputs.configured == 'true'
         run: |
           set -euo pipefail
-          SRC=${{ env.IMAGE }}:ci-${{ github.sha }}
+          REG=${{ steps.ecr.outputs.registry }}
+          REPO="$REG/${{ env.ECR_REPOSITORY }}"
           SHORT=$(echo "${{ github.sha }}" | cut -c1-12)
+
+          # Create the repository on first run rather than failing on push.
+          aws ecr describe-repositories --repository-names "${{ env.ECR_REPOSITORY }}" >/dev/null 2>&1             || aws ecr create-repository                  --repository-name "${{ env.ECR_REPOSITORY }}"                  --image-scanning-configuration scanOnPush=true                  --image-tag-mutability MUTABLE
+
           for tag in hardened "sha-$SHORT"; do
-            docker tag "$SRC" "${{ env.IMAGE }}:$tag"
-            docker push "${{ env.IMAGE }}:$tag"
+            docker tag "${{ env.LOCAL_TAG }}" "$REPO:$tag"
+            docker push "$REPO:$tag"
           done
-          echo "Digest to pin in code-ingestion-service/Dockerfile:"
-          docker inspect --format='{{index .RepoDigests 0}}' "${{ env.IMAGE }}:hardened" || true
+
+          DIGEST=$(aws ecr describe-images \
+                    --repository-name "${{ env.ECR_REPOSITORY }}" \
+                    --image-ids imageTag=hardened \
+                    --query 'imageDetails[0].imageDigest' --output text)
+          {
+            echo "### Published"
+            echo ""
+            echo "Pin this in \`code-ingestion-service/Dockerfile\`:"
+            echo ""
+            echo "    FROM $REPO@$DIGEST"
+          } >> $GITHUB_STEP_SUMMARY
+          echo "FROM $REPO@$DIGEST"
