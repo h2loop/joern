@@ -97,6 +97,27 @@ compile Joern. It downloads the prebuilt `joern-cli.zip` from the latest
   `joern-cli`, so unzipping into `/opt/joern` reproduces upstream's
   `/opt/joern/joern-cli` layout exactly.
 
+### Image size
+
+Upstream `ghcr.io/joernio/joern` (amd64) is **2.63 GB compressed / ~5.1 GB
+uncompressed** in 3 layers, almost all of it one 2596 MB layer.
+
+The first revision of this Dockerfile came out ~1.3 GB heavier, because it did
+`COPY --from=builder /dist/joern-cli.zip` and then `rm`-ed the zip in the *next*
+`RUN`. A COPY is its own layer, so the delete only hid the data -- the zip stayed in
+the image permanently. Upstream never hits this because `Dockerfile.alma` curls and
+deletes the zip inside a single `RUN`.
+
+The zip is now bind-mounted from the builder
+(`RUN --mount=type=bind,from=builder,...`), so it never lands in a layer at all, and
+the unzip plus `chown -R` share one layer so the tree is not duplicated either. CI
+asserts a 6.5 GB uncompressed ceiling to catch this class of regression.
+
+A `.dockerignore` also excludes `.github/`, `ci/` and root `*.md` from the build
+context: the builder does `COPY . /src`, so without it editing a workflow or this
+document invalidates the sbt layer and forces a ~25 minute recompile. `.git` is
+deliberately kept, since sbt-dynver needs the tags to stamp a version.
+
 That layout matters: `code-ingestion-service` resolves frontends as
 `dirname($JOERN_CLI_PATH)/<tool>` with `JOERN_CLI_PATH=/opt/joern/joern-cli/joern`,
 so the image is a drop-in replacement for `ghcr.io/joernio/joern`.

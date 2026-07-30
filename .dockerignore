@@ -1,0 +1,19 @@
+# The builder stage does `COPY . /src`, so anything in the context invalidates the
+# sbt layer -- a ~25 minute rebuild. Exclude paths the build never reads, so editing
+# a workflow or a doc does not force a full recompile.
+#
+# NB: .git is deliberately NOT excluded. sbt-dynver derives the version from git
+# tags, and without it the distribution would be stamped 0.1.0-SNAPSHOT.
+.github/
+ci/
+*.md
+!README.md
+
+# Local build output, if the context is a working tree that has been built.
+target/
+*/target/
+**/target/
+.bsp/
+.idea/
+.metals/
+.bloop/

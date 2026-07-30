@@ -58,6 +58,28 @@ jobs:
           cache-from: type=gha,scope=joern-h2loop
           cache-to: type=gha,mode=max,scope=joern-h2loop
 
+      # Upstream ghcr.io/joernio/joern (amd64) is 2.63 GB compressed / ~5.1 GB
+      # uncompressed. An earlier revision of ci/Dockerfile.h2loop COPYed the
+      # distribution zip into its own layer, which permanently added ~1.3 GB that the
+      # later `rm` merely hid. Guard against that class of regression.
+      - name: Report image size
+        run: |
+          set -euo pipefail
+          bytes=$(docker image inspect ${{ env.LOCAL_TAG }} --format '{{.Size}}')
+          gb=$(python3 -c "print(f'{$bytes/1e9:.2f}')")
+          echo "uncompressed image size: ${gb} GB"
+          echo "| layer | size |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| total (uncompressed) | ${gb} GB |" >> $GITHUB_STEP_SUMMARY
+          docker history ${{ env.LOCAL_TAG }} --human --format '{{.Size}}\t{{.CreatedBy}}' | head -12
+          # 6.5 GB uncompressed leaves headroom over upstream's ~5.1 GB without
+          # tolerating a duplicated distribution.
+          limit=6500000000
+          if [ "$bytes" -gt "$limit" ]; then
+            echo "::error title=Image too large::${gb} GB exceeds the $(python3 -c "print(f'{$limit/1e9:.1f}')") GB budget -- check for a duplicated layer"
+            exit 1
+          fi
+
       # Fail fast if the dependency overrides broke the distribution.
       - name: Smoke test the frontends code-ingestion uses
         run: |
