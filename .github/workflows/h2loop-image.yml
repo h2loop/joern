@@ -191,3 +191,35 @@ jobs:
             echo "    FROM $REPO@$DIGEST"
           } >> $GITHUB_STEP_SUMMARY
           echo "FROM $REPO@$DIGEST"
+
+      # Bootstrap path: no GitHub OIDC role currently trusts repo:h2loop/joern:*
+      # (the existing h2loop-github-deploy / h2loop-litellm-github-deploy roles are
+      # scoped to h2loop/platform and litellm_gcp_cloud_run). Until that trust
+      # policy is widened, hand the image off as a tarball so it can be loaded and
+      # pushed to ECR with a developer's own credentials.
+      - name: Export image tarball (only when the push was skipped)
+        if: steps.awscheck.outputs.configured != 'true'
+        run: |
+          set -euo pipefail
+          docker save ${{ env.LOCAL_TAG }} | gzip -1 > joern-hardened.tar.gz
+          ls -lh joern-hardened.tar.gz
+          {
+            echo "### Image exported as an artifact"
+            echo ""
+            echo "Load and publish it with:"
+            echo ""
+            echo '    gh run download ${{ github.run_id }} -R h2loop/joern -n joern-image'
+            echo '    gunzip -c joern-hardened.tar.gz | docker load'
+            echo '    aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 501235162365.dkr.ecr.us-east-1.amazonaws.com'
+            echo '    docker tag ${{ env.LOCAL_TAG }} 501235162365.dkr.ecr.us-east-1.amazonaws.com/${{ env.ECR_REPOSITORY }}:hardened'
+            echo '    docker push 501235162365.dkr.ecr.us-east-1.amazonaws.com/${{ env.ECR_REPOSITORY }}:hardened'
+          } >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload image tarball
+        if: steps.awscheck.outputs.configured != 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: joern-image
+          path: joern-hardened.tar.gz
+          compression-level: 0 # already gzipped
+          retention-days: 5

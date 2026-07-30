@@ -78,8 +78,16 @@ images are amd64). It authenticates with the same GitHub OIDC pattern as
 | secret | `AWS_ROLE_ARN` | role trusting `repo:h2loop/joern:*`, with ECR push rights on `hydron-platform/joern` |
 | var | `AWS_REGION` | `us-east-1` |
 
-Until `AWS_ROLE_ARN` is set the workflow still builds, gates and scans -- it just
-skips the push with a warning annotation instead of failing.
+**No such role exists yet.** The account's only GitHub-OIDC roles are
+`h2loop-github-deploy` (trusts `repo:h2loop/platform:ref:refs/heads/release_*`) and
+`h2loop-litellm-github-deploy` (scoped to `litellm_gcp_cloud_run`), so one of them
+needs `repo:h2loop/joern:*` added to its trust policy -- or a new role -- by someone
+with IAM write access. `DeveloperAccess` cannot do it.
+
+Until then the workflow still builds, gates and scans; instead of pushing it
+exports the image as a `joern-image` artifact so it can be loaded and pushed to ECR
+with a developer's own SSO credentials. The ECR repository
+`hydron-platform/joern` already exists (created 2026-07-31, `scanOnPush=true`).
 
 The workflow builds, then **gates on**:
 1. all 12 frontend entrypoints `code-ingestion` invokes being present and executable,
@@ -105,7 +113,10 @@ trivy image --severity HIGH,CRITICAL --ignore-unfixed joern-h2loop:local
 - [x] Rebased onto upstream `master` (2026-07-31), no conflicts
 - [x] Image build path that actually carries the fixes
 - [ ] CI run green (build + smoke + bundled-version gate + scan) -- **not yet run**
-- [ ] `AWS_ROLE_ARN` / `AWS_REGION` configured on this repo, image pushed to ECR
+- [x] ECR repo `hydron-platform/joern` created (us-east-1, scanOnPush)
+- [x] `AWS_REGION` var set on this repo
+- [ ] `AWS_ROLE_ARN` secret + IAM trust policy for `repo:h2loop/joern:*` -- **needs IAM write access**
+- [ ] Image in ECR (bootstrap via the exported tarball until the role exists)
 - [ ] Verified on the dev cluster (see caveat below)
 - [ ] `code-ingestion-service/Dockerfile` `FROM` flipped to the new image by digest
 
