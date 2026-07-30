@@ -85,20 +85,48 @@ jobs:
           echo "c2cpg produced a CPG"
 
       # Confirm the overrides are what actually got bundled, not just requested.
-      - name: Verify hardened dependency versions in joern-cli/lib
+      # NB: the distribution has ~15 lib dirs, not one -- joern-cli/build.sbt maps
+      # each frontend's staged output in under its own subdirectory -- so this must
+      # search the whole tree. And it asserts the *absence of known-vulnerable
+      # versions* rather than the presence of specific new ones: dependencyOverrides
+      # only pins deps that are actually in the graph, so a dep that upstream no
+      # longer pulls in legitimately yields no jar at all.
+      - name: Verify no known-vulnerable jars survive anywhere in the image
         run: |
-          set -euo pipefail
+          set -uo pipefail
           docker run --rm --entrypoint sh ${{ env.LOCAL_TAG }} -c '
-            ls /opt/joern/joern-cli/lib | grep -iE "protobuf-java|undertow-core|bcprov|msgpack-core|okhttp|commons-io|plexus-utils" | sort
-          ' | tee /tmp/bundled.txt
+            find /opt/joern -name "*.jar" 2>/dev/null \
+              | grep -iE "protobuf-java|undertow-core|bcprov|msgpack-core|okhttp|commons-io|plexus-utils" \
+              | sed "s|.*/||" | sort -u
+          ' > /tmp/bundled.txt || true
+          echo "--- matching jars in the distribution ---"
+          cat /tmp/bundled.txt
+          {
+            echo "### Bundled versions of the overridden dependencies"
+            echo '```'
+            cat /tmp/bundled.txt
+            echo '```'
+          } >> $GITHUB_STEP_SUMMARY
+
           fail=0
-          check() { grep -q "$1" /tmp/bundled.txt || { echo "NOT BUNDLED AS EXPECTED: $1"; fail=1; }; }
-          check "protobuf-java-3.25.9"
-          check "undertow-core-2.3.26.Final"
-          check "bcprov-jdk18on-1.85"
-          check "msgpack-core-0.9.12"
-          check "okhttp-4.12.0"
-          check "plexus-utils-3.6.1"
+          # The versions the original Trivy scan flagged. Any of these still present
+          # means an override did not take effect.
+          for bad in \
+            "protobuf-java-3.20.1" "protobuf-java-3.21.8" \
+            "undertow-core-2.3.18" "undertow-core-2.3.19" "undertow-core-2.3.20" \
+            "bcprov-jdk18on-1.78" "bcprov-jdk18on-1.79" "bcprov-jdk18on-1.80" \
+            "msgpack-core-0.9.1.jar" "msgpack-core-0.9.2.jar" \
+            "okhttp-4.7.2" "okhttp-4.8" "okhttp-4.9" "okhttp-4.10" "okhttp-4.11" \
+            "commons-io-2.11.0" "commons-io-2.12" "commons-io-2.13" \
+            "plexus-utils-3.2.1" "plexus-utils-3.3" "plexus-utils-3.4" "plexus-utils-3.5"; do
+            if grep -q "$bad" /tmp/bundled.txt; then
+              echo "STILL VULNERABLE: $bad is present"
+              fail=1
+            fi
+          done
+          if [ "$fail" = "0" ]; then
+            echo "OK: none of the flagged vulnerable versions are present"
+          fi
           exit $fail
 
       - name: Confirm goastgen is the h2loop rebuild

@@ -92,10 +92,25 @@ with a developer's own SSO credentials. The ECR repository
 The workflow builds, then **gates on**:
 1. all 12 frontend entrypoints `code-ingestion` invokes being present and executable,
 2. `c2cpg.sh` actually producing a CPG,
-3. the overridden versions being the ones physically in `joern-cli/lib` (requested
-   != bundled),
+3. no known-vulnerable version of an overridden dependency surviving *anywhere* in
+   the distribution (requested != bundled),
 
 then Trivy-scans and pushes.
+
+### On `bcprov` and `okhttp`
+
+Run 30579709736 found **no `bcprov` or `okhttp` jar of any version** in
+`joern-cli/lib`. `dependencyOverrides` only pins what is actually in the dependency
+graph, so an override for something upstream does not pull in is a no-op -- it does
+not invent a jar. Two possibilities, and the rebuilt gate distinguishes them:
+either those jars live in one of the *other* ~15 lib directories (each frontend's
+staged output is mapped in under its own subdirectory by `joern-cli/build.sbt`, so
+the first version of this check was looking in one of fifteen places), or the
+original Trivy findings came from somewhere other than the Joern distribution and
+the overrides for them were never load-bearing.
+
+Either way the correct assertion is the absence of the flagged versions anywhere in
+the tree, not the presence of specific new ones.
 
 ## Building / verifying locally
 
@@ -110,6 +125,10 @@ trivy image --severity HIGH,CRITICAL --ignore-unfixed joern-h2loop:local
 ## Status
 
 - [x] Overrides resolve (all seven versions confirmed present on Maven Central)
+- [x] Image builds from source; all 12 frontends present; `c2cpg.sh` produces a CPG
+      (run 30579709736)
+- [x] protobuf 3.25.9, undertow 2.3.26.Final, msgpack 0.9.12, commons-io 2.16.0 and
+      plexus-utils 3.6.1 confirmed bundled in `joern-cli/lib`
 - [x] Rebased onto upstream `master` (2026-07-31), no conflicts
 - [x] Image build path that actually carries the fixes
 - [ ] CI run green (build + smoke + bundled-version gate + scan) -- **not yet run**
