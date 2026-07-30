@@ -129,14 +129,21 @@ jobs:
           fi
           exit $fail
 
-      - name: Confirm goastgen is the h2loop rebuild
+      # go1.25.6 (v0.1.1-h2loop1) did NOT clear CVE-2025-68121 -- that needs 1.25.7+
+      # -- so assert the toolchain rather than merely printing it.
+      - name: Confirm goastgen is built with the expected Go toolchain
         run: |
-          docker run --rm --entrypoint sh ${{ env.LOCAL_TAG }} -c '
-            b=$(find /opt/joern/joern-cli -name "goastgen*" -type f | head -1)
+          set -euo pipefail
+          out=$(docker run --rm --entrypoint sh ${{ env.LOCAL_TAG }} -c '
+            b=$(find /opt/joern -name "goastgen-linux" -type f | head -1)
             echo "binary: $b"
-            go_ver=$(strings "$b" 2>/dev/null | grep -oE "^go1\.[0-9]+(\.[0-9]+)?$" | sort -u | head -5)
-            echo "embedded go toolchain markers: $go_ver"
-          ' || echo "note: strings unavailable in image; Trivy output below is authoritative"
+            strings "$b" 2>/dev/null | grep -oE "^go1\.[0-9]+(\.[0-9]+)?$" | sort -u
+          ')
+          echo "$out"
+          echo "$out" | grep -q "go1.26.5" || {
+            echo "goastgen was not built with go1.26.5 -- stdlib CVEs will persist"
+            exit 1
+          }
 
       # Run Trivy from its own image rather than via trivy-action: that action's
       # setup step installs the binary through the GitHub API and failed on run

@@ -68,7 +68,8 @@ ThisBuild / libraryDependencies ++= Seq(
 //   protobuf-java 3.20.1/3.21.8 -> 3.25.9      (stays on 3.x, avoids the 4.x break)
 //   protobuf-java-util 3.25.5   -> 3.25.9      (separate artifact; keep in lockstep)
 //   undertow-core 2.3.18.Final  -> 2.3.26.Final
-//   bcprov-jdk18on 1.78         -> 1.85
+//   bcprov-jdk18on 1.78         -> 1.85       (INERT: see SECURITY-FIXES.md -- the vulnerable
+//                                              copy is nested inside jruby-complete, fixed via Versions.jRuby)
 //   msgpack-core 0.9.1          -> 0.9.12
 //   okhttp 4.7.2                -> 4.12.0
 //   commons-io <2.16.0          -> 2.16.0      (matches Versions.commonsIo; raises older transitives only)

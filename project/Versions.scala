@@ -21,7 +21,7 @@ object Versions {
   val gradleTooling          = "8.3"
   val jacksonDatabind        = "2.17.0"
   val javaParser             = "3.28.0"
-  val jRuby                  = "9.4.9.0"
+  val jRuby                  = "9.4.15.0" // security: 9.4.9.0 bundles bcprov-jdk18on 1.78 (CVE-2025-14813); 9.4.15.0 bundles 1.84
   val json4s                 = "4.0.7"
   val lombok                 = "1.18.42"
   val mavenArtifact          = "3.9.16"

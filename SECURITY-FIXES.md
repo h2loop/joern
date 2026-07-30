@@ -19,11 +19,25 @@ its line as of 2026-07-31.
 | com.google.protobuf:protobuf-java | 3.20.1 & 3.21.8 | 3.25.9 | stays on 3.x, avoids the 4.x break; ~43 HIGH |
 | com.google.protobuf:protobuf-java-util | 3.25.5 | 3.25.9 | separate artifact, found bundled at 3.25.5; kept in lockstep |
 | io.undertow:undertow-core | 2.3.18.Final | 2.3.26.Final | CVE-2025-12543 (CRITICAL) + 3 HIGH |
-| org.bouncycastle:bcprov-jdk18on | 1.78 | 1.85 | CVE-2025-14813 (CRITICAL) |
+| org.bouncycastle:bcprov-jdk18on | 1.78 | 1.85 | **inert** -- see below; fixed via `Versions.jRuby` instead |
 | org.msgpack:msgpack-core | 0.9.1 | 0.9.12 | 15 HIGH |
 | com.squareup.okhttp3:okhttp | 4.7.2 | 4.12.0 | 1 HIGH |
 | commons-io:commons-io | 2.11.0 | 2.16.0 (`Versions.commonsIo`) | raises older transitives to upstream's own pin |
 | org.codehaus.plexus:plexus-utils | 3.2.1 | 3.6.1 | 1 HIGH |
+
+### bcprov: nested inside jruby-complete, not a resolved dependency
+
+Trivy located the vulnerable copy: `bcprov-jdk18on 1.78` sits **inside**
+`org.jruby.jruby-complete-9.4.9.0.jar`, which vendors its own BouncyCastle under
+`META-INF/jruby.home/lib/ruby/stdlib/`. It is not a node in the sbt dependency
+graph, so `dependencyOverrides` cannot touch it -- that override is inert (kept
+only as a guard should bcprov ever become a real dependency), and a
+`find -name "*.jar"` never saw it because it is a jar inside a jar.
+
+The actual fix is a patch-level bump of `Versions.jRuby`, 9.4.9.0 -> 9.4.15.0,
+which vendors bcprov/bcpkix **1.84** -- a listed fix version for CVE-2025-14813
+(1.80.2, 1.81.1, 1.84). Verified by unzipping both jars and diffing the vendored
+BouncyCastle. Staying on the 9.4 line avoids the 9.4 -> 10.x major jump.
 
 ## 2. Native Go astgen — rebuilt with a newer Go
 
@@ -32,15 +46,34 @@ CVE-2025-68121) came from the prebuilt `goastgen` binary (`gosrc2cpg`), which
 upstream compiled with go1.21.12. Both upstream releases (v0.1.0 and v0.1.1) use
 that same old toolchain, so a version bump alone does nothing.
 
-Fix: `goastgen` was rebuilt from source with **go1.25.6** (same source, hardened
-toolchain) for all platforms and published as `h2loop/astgen-monorepo` release
-**`go-astgen/v0.1.1-h2loop1`**. This fork pulls that build:
-- `gosrc2cpg/src/main/resources/application.conf`: `goastgen_version` -> `0.1.1-h2loop1`
+**The first attempt at this did not work.** Release `v0.1.1-h2loop1` rebuilt the
+binary with go1.25.6, but Trivy on the resulting image (run 30583692200) still
+reported **13 findings (12 HIGH + 1 CRITICAL)** against it -- including
+CVE-2025-68121 itself. That CVE is fixed in 1.24.13 and **1.25.7**; go1.25.6
+predates the fix on its own line. Twelve further HIGH stdlib advisories landed
+after 1.25.6. So the count went from ~70 to 13, not to zero.
+
+Current fix: rebuilt with **go1.26.5**, published as
+**`go-astgen/v0.1.1-h2loop2`**, which is at or above every listed fix version for
+all 13. Verified independently: `trivy rootfs` on the new `goastgen-linux` reports
+**0 vulnerabilities** (was 13). This fork pulls that build:
+- `gosrc2cpg/src/main/resources/application.conf`: `goastgen_version` -> `0.1.1-h2loop2`
 - `gosrc2cpg/build.sbt`: `goAstGenDlUrl` -> `h2loop/astgen-monorepo`
 
-Source change (go directive floor -> 1.24.13) lives on
-`h2loop/astgen-monorepo@security/goastgen-go-bump`. Upstream has published no
-newer `go-astgen` release since (checked 2026-07-31), so this is still current.
+Source change lives on `h2loop/astgen-monorepo@security/goastgen-go-bump` (rebased
+onto upstream `main`): `go-astgen/go.mod` now pins `toolchain go1.26.5` explicitly
+rather than relying on the `go` directive floor plus whatever `GOTOOLCHAIN`
+resolves to, and `go-astgen-release.yml` builds with 1.26.5. Upstream has published
+no newer `go-astgen` release (checked 2026-07-31).
+
+The h2loop2 binaries were cross-compiled locally (`CGO_ENABLED=0`, same ldflags as
+the release workflow) because **GitHub Actions is not activated on the
+`h2loop/astgen-monorepo` fork** -- a fork-level flag that can only be flipped in
+the web UI, not through the API. Worth enabling so future rebuilds are reproducible
+in CI.
+
+The image workflow now *asserts* `go1.26.5` in the shipped binary rather than
+printing the version, so a stale toolchain fails the build.
 
 The other astgen binaries (jssrc2cpg=Node, csharpsrc2cpg=.NET, swiftsrc2cpg=Swift,
 rust2cpg=Rust, ruby=gem, php-parser=PHP) are not Go and were not flagged; they are
