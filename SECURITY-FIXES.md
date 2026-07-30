@@ -204,15 +204,15 @@ trivy image --severity HIGH,CRITICAL --ignore-unfixed joern-h2loop:local
 - [ ] Verified on the dev cluster (see caveat below)
 - [ ] `code-ingestion-service/Dockerfile` `FROM` flipped to the new image by digest
 
-### Caveat for the dev-cluster test
+### Consumer wiring
 
-`eks-dev` pulls `code-ingestion` from **GCP Artifact Registry**
-(`asia-south1-docker.pkg.dev/h2loop-dev/saas-dev-images/code-ingestion`), and that
-image's build pipeline authenticates to GCP via Workload Identity Federation only
--- it holds no AWS credentials. So a `FROM` pointing at a private ECR repo will
-fail in that build. Before the dev test, one of these has to happen:
+`eks-dev` pulls every first-party image from this same ECR registry --
+`kubectl get deploy` shows `code-ingestion:v1.1.0`, `h2loop-core:v1.1.1`,
+`doc-ingestion:v1.1.1`, `retriever:v1.1.5`, all from
+`501235162365.dkr.ecr.us-east-1.amazonaws.com/hydron-platform/`. So the hardened
+base and its consumer sit in the same registry and account, and pinning
+`code-ingestion`'s `FROM` at the ECR digest needs no extra credentials anywhere.
 
-1. mirror the hardened image to GAR as well (dev builds pull from GAR, ECR stays
-   the canonical copy for `eks-dev` core images and onprem), or
-2. add AWS OIDC credentials to `code-ingestion-service`'s build workflow, or
-3. rebuild `code-ingestion` by hand for the dev test.
+(The `asia-south1-docker.pkg.dev` entries still in
+`platform-kubernetes-configs/kustomization.yaml` are stale leftovers from the
+GKE -> EKS migration and do not reflect what the cluster runs.)
