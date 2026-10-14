@@ -10,7 +10,7 @@
 # drop-in replacement for ghcr.io/joernio/joern.
 #
 # Build:  docker build -f ci/Dockerfile.h2loop -t joern-h2loop:local .
-# Target: linux/amd64 only (all first-party h2loop images are amd64).
+# Target: linux/amd64 and linux/arm64, each built natively by .github/workflows/h2loop-image.yml.
 
 ################################ builder ################################
 FROM almalinux/9-minimal:latest AS builder

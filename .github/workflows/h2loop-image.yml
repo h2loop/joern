@@ -7,14 +7,28 @@ name: h2loop hardened image
 # Upstream's containers.yml cannot do this: it installs the prebuilt joern-cli.zip
 # from the latest joernio/joern release, which is unaffected by our fixes.
 #
+# Built for linux/amd64 AND linux/arm64, each natively (ubuntu-24.04 / ubuntu-24.04-arm,
+# no QEMU), and published as ONE multi-arch `hardened` tag. arm64 exists for the on-prem GX10
+# (GB10, ARM): code-ingestion copies joern-cli out of this image, so its arm64 build needs an
+# arm64 one here. sbt fetches each frontend's native helper (goastgen, astgen, ...) for the
+# arch it runs on, which is why this cannot be a cross-build of one zip.
+#
 # Requires (same OIDC pattern as h2loop/hydron-cli):
 #   secret AWS_ROLE_ARN  - role trusting repo:h2loop/joern:*, with ecr push rights
 #   var    AWS_REGION    - us-east-1 (where hydron-platform/* lives)
 # Without the secret the build and scan still run; the push is skipped loudly.
+#
+# Pull requests into the branch build and test both arches and publish nothing.
+#
+# Trivy here REPORTS, it does not gate: this is a base image, and code-ingestion's own image
+# workflow scans the final image (which carries joern-cli) and fails on HIGH/CRITICAL there.
 
 on:
   workflow_dispatch:
   push:
+    branches:
+      - security/bundled-dep-overrides
+  pull_request:
     branches:
       - security/bundled-dep-overrides
   schedule:
@@ -25,12 +39,17 @@ env:
   LOCAL_TAG: joern-h2loop:ci
 
 jobs:
-  build-scan-push:
+  build-scan:
     if: github.repository_owner == 'h2loop'
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
-      id-token: write # for aws-actions/configure-aws-credentials
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -40,7 +59,7 @@ jobs:
       # default free space.
       - name: Free disk space
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost || true
           sudo docker image prune -af || true
           df -h /
 
@@ -52,11 +71,18 @@ jobs:
         with:
           context: .
           file: ci/Dockerfile.h2loop
-          platforms: linux/amd64
+          platforms: linux/${{ matrix.arch }}
           load: true
+          provenance: false
           tags: ${{ env.LOCAL_TAG }}
-          cache-from: type=gha,scope=joern-h2loop
-          cache-to: type=gha,mode=max,scope=joern-h2loop
+          cache-from: type=gha,scope=joern-h2loop-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=joern-h2loop-${{ matrix.arch }}
+
+      - name: Image is ${{ matrix.arch }}
+        run: |
+          got=$(docker image inspect -f '{{.Architecture}}' ${{ env.LOCAL_TAG }})
+          echo "architecture: $got"
+          [ "$got" = "${{ matrix.arch }}" ]
 
       # Upstream ghcr.io/joernio/joern (amd64) is 2.63 GB compressed / ~5.1 GB
       # uncompressed. An earlier revision of ci/Dockerfile.h2loop COPYed the
@@ -157,7 +183,7 @@ jobs:
         run: |
           set -euo pipefail
           out=$(docker run --rm --entrypoint sh ${{ env.LOCAL_TAG }} -c '
-            b=$(find /opt/joern -name "goastgen-linux" -type f | head -1)
+            b=$(find /opt/joern -name "goastgen-linux*" -type f | head -1)
             echo "binary: $b"
             strings "$b" 2>/dev/null | grep -oE "^go1\.[0-9]+(\.[0-9]+)?$" | sort -u
           ')
@@ -186,7 +212,7 @@ jobs:
       - name: Trivy summary
         run: |
           {
-            echo '## Trivy: HIGH/CRITICAL (fixable), `${{ env.ECR_REPOSITORY }}` candidate'
+            echo '## Trivy: HIGH/CRITICAL (fixable), `${{ env.ECR_REPOSITORY }}` candidate, linux/${{ matrix.arch }}'
             echo '```'
             head -c 60000 trivy-report.txt
             echo '```'
@@ -197,10 +223,32 @@ jobs:
       - name: Upload Trivy report
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: trivy-report
+          name: trivy-report-${{ matrix.arch }}
           path: trivy-report.txt
 
-      # --- publish to ECR (hydron-platform/joern, us-east-1) ---
+      # Handed to the publish job, which pushes only once BOTH arches got this far.
+      - name: Save image
+        if: github.event_name != 'pull_request'
+        run: docker save ${{ env.LOCAL_TAG }} -o joern-hardened-${{ matrix.arch }}.tar
+
+      - name: Upload image
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: joern-image-${{ matrix.arch }}
+          path: joern-hardened-${{ matrix.arch }}.tar
+          retention-days: 5
+
+  # --- publish to ECR (hydron-platform/joern, us-east-1) ---
+  # One job after both arches passed, so `hardened` never points at half a release.
+  publish:
+    needs: build-scan
+    if: github.repository_owner == 'h2loop' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write # for aws-actions/configure-aws-credentials
+    steps:
       # Skipped, loudly, when the OIDC secret has not been configured yet.
       - name: Check for AWS credentials
         id: awscheck
@@ -209,13 +257,12 @@ jobs:
             echo "configured=true" >> $GITHUB_OUTPUT
           else
             echo "configured=false" >> $GITHUB_OUTPUT
-            echo "::warning title=ECR push skipped::secrets.AWS_ROLE_ARN is not set on this repo, so the image was built and scanned but NOT published. See SECURITY-FIXES.md."
-            echo '> **Image NOT pushed** - `secrets.AWS_ROLE_ARN` is unset on h2loop/joern.' >> $GITHUB_STEP_SUMMARY
+            echo "::warning title=ECR push skipped::secrets.AWS_ROLE_ARN is not set on this repo, so the images were built and scanned but NOT published. See the run summary."
           fi
 
       - name: Configure AWS credentials (OIDC)
         if: steps.awscheck.outputs.configured == 'true'
-        uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c # v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
@@ -223,9 +270,28 @@ jobs:
       - name: Log in to Amazon ECR
         if: steps.awscheck.outputs.configured == 'true'
         id: ecr
-        uses: aws-actions/amazon-ecr-login@4625ce35226a7557230889aae2f52eb50ec3dcda # v2.0.1
+        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076 # v2.0.1
 
-      - name: Push to ECR (hardened + sha tags)
+      - name: Install crane
+        if: steps.awscheck.outputs.configured == 'true'
+        run: |
+          set -euo pipefail
+          f=go-containerregistry_Linux_x86_64.tar.gz
+          curl -fsSLo "$f" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/$f"
+          echo "0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0  $f" | sha256sum -c -
+          tar -xzf "$f" crane && sudo mv crane /usr/local/bin/
+
+      - name: Download images
+        if: steps.awscheck.outputs.configured == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: joern-image-*
+          merge-multiple: true
+
+      # crane, NOT docker load + docker push: layers coming out of a docker save archive are
+      # uncompressed, and docker push ships them as-is, making the image ~1 GB bigger on the
+      # wire. crane gzips them.
+      - name: Push to ECR (hardened + sha tags, multi-arch)
         if: steps.awscheck.outputs.configured == 'true'
         run: |
           set -euo pipefail
@@ -234,58 +300,46 @@ jobs:
           SHORT=$(echo "${{ github.sha }}" | cut -c1-12)
 
           # Create the repository on first run rather than failing on push.
-          aws ecr describe-repositories --repository-names "${{ env.ECR_REPOSITORY }}" >/dev/null 2>&1             || aws ecr create-repository                  --repository-name "${{ env.ECR_REPOSITORY }}"                  --image-scanning-configuration scanOnPush=true                  --image-tag-mutability MUTABLE
+          aws ecr describe-repositories --repository-names "${{ env.ECR_REPOSITORY }}" >/dev/null 2>&1 \
+            || aws ecr create-repository \
+                 --repository-name "${{ env.ECR_REPOSITORY }}" \
+                 --image-scanning-configuration scanOnPush=true \
+                 --image-tag-mutability MUTABLE
 
-          for tag in hardened "sha-$SHORT"; do
-            docker tag "${{ env.LOCAL_TAG }}" "$REPO:$tag"
-            docker push "$REPO:$tag"
+          for a in amd64 arm64; do
+            crane push "joern-hardened-$a.tar" "$REPO:sha-$SHORT-$a"
           done
+          crane index append -t "$REPO:sha-$SHORT" -m "$REPO:sha-$SHORT-amd64" -m "$REPO:sha-$SHORT-arm64"
+          crane tag "$REPO:sha-$SHORT" hardened
 
-          DIGEST=$(aws ecr describe-images \
-                    --repository-name "${{ env.ECR_REPOSITORY }}" \
-                    --image-ids imageTag=hardened \
-                    --query 'imageDetails[0].imageDigest' --output text)
+          DIGEST=$(crane digest "$REPO:hardened")
           {
-            echo "### Published"
+            echo "### Published (linux/amd64 + linux/arm64)"
             echo ""
-            echo "Pin this in \`code-ingestion-service/Dockerfile\`:"
+            echo "Pin this in \`code-ingestion-service/Dockerfile\` (JOERN_IMAGE):"
             echo ""
-            echo "    FROM $REPO@$DIGEST"
+            echo "    $REPO:hardened@$DIGEST"
           } >> $GITHUB_STEP_SUMMARY
-          echo "FROM $REPO@$DIGEST"
+          echo "$REPO:hardened@$DIGEST"
 
-      # Bootstrap path: no GitHub OIDC role currently trusts repo:h2loop/joern:*
-      # (the existing h2loop-github-deploy / h2loop-litellm-github-deploy roles are
-      # scoped to h2loop/platform and litellm_gcp_cloud_run). Until that trust
-      # policy is widened, hand the image off as a tarball so it can be loaded and
-      # pushed to ECR with a developer's own credentials.
-      - name: Export image tarball (only when the push was skipped)
+      # Bootstrap path: no GitHub OIDC role currently trusts repo:h2loop/joern:*.
+      # Until one does, the per-arch tarballs stay on the run and are pushed by hand.
+      - name: How to publish by hand
         if: steps.awscheck.outputs.configured != 'true'
         run: |
-          set -euo pipefail
-          docker save ${{ env.LOCAL_TAG }} | gzip -1 > joern-hardened.tar.gz
-          ls -lh joern-hardened.tar.gz
           {
-            echo "### Image exported as an artifact"
+            echo "### Images NOT pushed -- \`secrets.AWS_ROLE_ARN\` is unset on h2loop/joern"
             echo ""
-            echo "Load and publish it with:"
+            echo "Both arches passed. Publish them as one multi-arch tag with:"
             echo ""
-            echo '    gh run download ${{ github.run_id }} -R h2loop/joern -n joern-image'
-            echo '    gunzip -c joern-hardened.tar.gz > joern-hardened.tar'
+            echo '    gh run download ${{ github.run_id }} -R h2loop/joern -p "joern-image-*"'
+            echo '    R=501235162365.dkr.ecr.us-east-1.amazonaws.com/${{ env.ECR_REPOSITORY }}'
             echo '    aws ecr get-login-password --region us-east-1 | crane auth login --username AWS --password-stdin 501235162365.dkr.ecr.us-east-1.amazonaws.com'
-            echo '    crane push joern-hardened.tar 501235162365.dkr.ecr.us-east-1.amazonaws.com/${{ env.ECR_REPOSITORY }}:hardened'
+            echo '    crane push joern-image-amd64/joern-hardened-amd64.tar $R:hardened-amd64'
+            echo '    crane push joern-image-arm64/joern-hardened-arm64.tar $R:hardened-arm64'
+            echo '    crane index append -t $R:hardened -m $R:hardened-amd64 -m $R:hardened-arm64'
+            echo '    crane digest $R:hardened   # pin this in code-ingestion-service/Dockerfile'
             echo ''
             echo 'Use crane, NOT docker load + docker push: layers coming out of a docker'
-            echo 'save archive are uncompressed, and docker push ships them as-is'
-            echo '(application/vnd.oci.image.layer.v1.tar), making the image ~1 GB bigger'
-            echo 'on the wire. crane gzips them, matching what a direct CI push produces.'
+            echo 'save archive are uncompressed, and docker push ships them as-is.'
           } >> $GITHUB_STEP_SUMMARY
-
-      - name: Upload image tarball
-        if: steps.awscheck.outputs.configured != 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: joern-image
-          path: joern-hardened.tar.gz
-          compression-level: 0 # already gzipped
-          retention-days: 5
