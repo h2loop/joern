@@ -13,9 +13,13 @@
 # Target: linux/amd64 and linux/arm64, each built natively by .github/workflows/h2loop-image.yml.
 
 ################################ builder ################################
-FROM almalinux/9-minimal:latest AS builder
+# Pinned by exact build AND multi-arch index digest (both stages). Refresh with
+# `crane digest almalinux/9-minimal:<9.x-YYYYMMDD>` when bumping.
+FROM almalinux/9-minimal:9.8-20260902@sha256:113f4008c804f871eeb813cb2872c708b32c790987f6d5682e5eb2399cc4c6d2 AS builder
 
+# SBT_SHA256 is sbt's own published sbt-<version>.tgz.sha256 for this release; bump both together.
 ENV SBT_VERSION=1.12.1 \
+    SBT_SHA256=ef0413dfdc177a0719ef9b1cb1841e99d41af29c9877cf601f1e67695142c3e9 \
     SBT_HOME=/usr/local/sbt \
     JAVA_HOME=/usr/lib/jvm/java-21-openjdk
 ENV PATH=${PATH}:${SBT_HOME}/bin:${JAVA_HOME}/bin
@@ -26,8 +30,9 @@ ENV PATH=${PATH}:${SBT_HOME}/bin:${JAVA_HOME}/bin
 # toolchain is needed here -- only a JDK, sbt, and curl/unzip/git.
 RUN microdnf update -y \
     && microdnf install -y java-21-openjdk-devel curl-minimal tar gzip zip unzip git-core which \
-    && curl -sL "https://github.com/sbt/sbt/releases/download/v${SBT_VERSION}/sbt-${SBT_VERSION}.tgz" \
-       | gunzip | tar -x -C /usr/local \
+    && curl -fsSL -o /tmp/sbt.tgz "https://github.com/sbt/sbt/releases/download/v${SBT_VERSION}/sbt-${SBT_VERSION}.tgz" \
+    && echo "${SBT_SHA256}  /tmp/sbt.tgz" | sha256sum -c - \
+    && tar -xzf /tmp/sbt.tgz -C /usr/local && rm /tmp/sbt.tgz \
     && microdnf clean all
 
 WORKDIR /src
@@ -43,7 +48,7 @@ RUN sbt --batch "joerncli/Universal/packageBin" \
     && cp joern-cli/target/universal/joern-cli-*.zip /dist/joern-cli.zip
 
 ################################ runtime ################################
-FROM almalinux/9-minimal:latest
+FROM almalinux/9-minimal:9.8-20260902@sha256:113f4008c804f871eeb813cb2872c708b32c790987f6d5682e5eb2399cc4c6d2
 
 LABEL maintainer="h2loop" \
       org.opencontainers.image.authors="H2Loop" \
